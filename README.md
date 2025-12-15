@@ -59,6 +59,32 @@ linked to ClickUp tasks.
 from auth import login_user
 from metrics import track_event
 
+"""
+Repository: mobile-app
+Branch: main
+
+This file represents production-ready code.
+All changes merged here come from Pull Requests
+linked to ClickUp tasks.
+"""
+
+from auth import login_user
+from metrics import track_event
+
+
+def validate_credentials(user_credentials: dict) -> None:
+    """
+    CU-341: Prevent crashes by validating input before attempting login.
+    Raises ValueError for invalid credentials.
+    """
+    username = (user_credentials.get("username") or "").strip()
+    password = (user_credentials.get("password") or "").strip()
+
+    if not username:
+        raise ValueError("Username is required.")
+    if not password:
+        raise ValueError("Password is required.")
+
 
 def main():
     """
@@ -75,7 +101,9 @@ def main():
     }
 
     try:
-        # CU-341: Fixed crash when password field is empty
+        # CU-341: Validate before calling login_user to avoid crashes on empty fields
+        validate_credentials(user_credentials)
+
         user = login_user(user_credentials)
 
         # CU-350: Track successful login event
@@ -87,16 +115,28 @@ def main():
         print("User logged in successfully.")
 
     except ValueError as error:
+        # CU-350 (extension): Track failed login attempts with reason
+        track_event(
+            event_name="login_failed",
+            user_id=None,
+            reason=str(error)
+        )
         print(f"Login failed: {error}")
 
     except Exception as error:
+        # Unexpected errors still bubble up after logging
+        track_event(
+            event_name="login_error",
+            user_id=None,
+            error_type=type(error).__name__
+        )
         print("Unexpected error occurred.")
-        raise error
+        raise
 
 
 if __name__ == "__main__":
     main()
-```
+
 
 ---
 
