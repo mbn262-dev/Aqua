@@ -7,48 +7,46 @@ All changes merged here come from Pull Requests
 linked to ClickUp tasks.
 """
 
+import hashlib
 from uuid import uuid4
 
 from auth import login_user
 from metrics import track_event
 
 
-DEFAULT_SESSION_DAYS = 1
-REMEMBER_ME_SESSION_DAYS = 30
-
-
-def get_session_days(remember_me: bool) -> int:
+def mask_username(username: str) -> str:
     """
-    CU-360: Define session duration based on 'remember me' selection.
+    CU-372: Mask username so sensitive identifiers are not sent to analytics.
+    Uses a short hash for consistency without exposure.
     """
-    return REMEMBER_ME_SESSION_DAYS if remember_me else DEFAULT_SESSION_DAYS
+    if not username:
+        return "unknown"
+    return hashlib.sha256(username.encode("utf-8")).hexdigest()[:10]
 
 
 def validate_credentials(user_credentials: dict) -> dict:
     """
-    Validate credentials so empty fields don't cause crashes downstream.
-    Returns cleaned credentials + remember_me flag.
+    Validate credentials and ensure sensitive values are not leaked.
     """
     username = (user_credentials.get("username") or "").strip()
     password = (user_credentials.get("password") or "").strip()
-    remember_me = bool(user_credentials.get("remember_me", False))
 
     if not username:
         raise ValueError("Username is required.")
     if not password:
         raise ValueError("Password is required.")
 
-    return {"username": username, "password": password, "remember_me": remember_me}
+    return {"username": username, "password": password}
 
 
-def track_login_event(event_name: str, correlation_id: str, user_id=None, **extra) -> None:
+def track_login_event(event_name: str, correlation_id: str, username=None, **extra) -> None:
     """
-    Centralize analytics tracking for login events.
+    CU-372: Centralize analytics tracking with masked identifiers.
     """
     payload = {
         "event_name": event_name,
-        "user_id": user_id,
         "correlation_id": correlation_id,
+        "user_ref": mask_username(username) if username else None,
         **extra,
     }
     track_event(**payload)
@@ -59,51 +57,41 @@ def main():
     Entry point for the application.
 
     Related ClickUp tasks:
-    - CU-360: Add 'Remember Me' option + session duration analytics
+    - CU-372: Mask sensitive login data in analytics
     """
 
     correlation_id = str(uuid4())
 
-    # CU-360: Add remember_me as a user preference (default False)
     user_credentials = {
-        "username": "test_user",
+        "username": "test_user@example.com",
         "password": "secure_password",
-        "remember_me": True,
     }
 
     try:
         cleaned = validate_credentials(user_credentials)
 
-        # CU-360: Set session duration based on remember_me
-        session_days = get_session_days(cleaned["remember_me"])
-
-        # Track attempt with session context
         track_login_event(
             event_name="login_attempt",
             correlation_id=correlation_id,
-            remember_me=cleaned["remember_me"],
-            session_days=session_days,
+            username=cleaned["username"],
         )
 
-        # In a real system, login_user might accept session duration or token policy
-        user = login_user(
-            {"username": cleaned["username"], "password": cleaned["password"]}
-        )
+        user = login_user(cleaned)
 
         track_login_event(
             event_name="login_success",
             correlation_id=correlation_id,
+            username=cleaned["username"],
             user_id=user["id"],
-            remember_me=cleaned["remember_me"],
-            session_days=session_days,
         )
 
-        print(f"User logged in successfully. session_days={session_days}")
+        print("User logged in successfully.")
 
     except ValueError as error:
         track_login_event(
             event_name="login_failed",
             correlation_id=correlation_id,
+            username=user_credentials.get("username"),
             reason=str(error),
         )
         print(f"Login failed: {error}")
@@ -112,6 +100,7 @@ def main():
         track_login_event(
             event_name="login_error",
             correlation_id=correlation_id,
+            username=user_credentials.get("username"),
             error_type=type(error).__name__,
         )
         print("Unexpected error occurred.")
