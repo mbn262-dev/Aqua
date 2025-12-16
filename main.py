@@ -7,27 +7,13 @@ All changes merged here come from Pull Requests
 linked to ClickUp tasks.
 """
 
-import hashlib
 from uuid import uuid4
 
 from auth import login_user
 from metrics import track_event
 
 
-def mask_username(username: str) -> str:
-    """
-    CU-372: Mask username so sensitive identifiers are not sent to analytics.
-    Uses a short hash for consistency without exposure.
-    """
-    if not username:
-        return "unknown"
-    return hashlib.sha256(username.encode("utf-8")).hexdigest()[:10]
-
-
 def validate_credentials(user_credentials: dict) -> dict:
-    """
-    Validate credentials and ensure sensitive values are not leaked.
-    """
     username = (user_credentials.get("username") or "").strip()
     password = (user_credentials.get("password") or "").strip()
 
@@ -39,14 +25,48 @@ def validate_credentials(user_credentials: dict) -> dict:
     return {"username": username, "password": password}
 
 
-def track_login_event(event_name: str, correlation_id: str, username=None, **extra) -> None:
+def map_login_error_to_code(error: Exception) -> str:
     """
-    CU-372: Centralize analytics tracking with masked identifiers.
+    CU-381: Standardize error reasons for clearer UX and better reporting.
     """
+    if isinstance(error, ValueError):
+        # Common validation errors
+        message = str(error).lower()
+        if "username" in message:
+            return "MISSING_USERNAME"
+        if "password" in message:
+            return "MISSING_PASSWORD"
+        return "INVALID_INPUT"
+
+    if isinstance(error, PermissionError):
+        return "INVALID_CREDENTIALS"
+
+    if isinstance(error, TimeoutError):
+        return "TIMEOUT"
+
+    return "UNKNOWN_ERROR"
+
+
+def user_friendly_message(error_code: str) -> str:
+    """
+    CU-381: Provide consistent messages without exposing sensitive details.
+    """
+    messages = {
+        "MISSING_USERNAME": "Please enter your username.",
+        "MISSING_PASSWORD": "Please enter your password.",
+        "INVALID_INPUT": "Please check your login details and try again.",
+        "INVALID_CREDENTIALS": "Incorrect username or password.",
+        "TIMEOUT": "Login is taking longer than expected. Please try again.",
+        "UNKNOWN_ERROR": "Something went wrong. Please try again.",
+    }
+    return messages.get(error_code, messages["UNKNOWN_ERROR"])
+
+
+def track_login_event(event_name: str, correlation_id: str, user_id=None, **extra) -> None:
     payload = {
         "event_name": event_name,
+        "user_id": user_id,
         "correlation_id": correlation_id,
-        "user_ref": mask_username(username) if username else None,
         **extra,
     }
     track_event(**payload)
@@ -57,13 +77,12 @@ def main():
     Entry point for the application.
 
     Related ClickUp tasks:
-    - CU-372: Mask sensitive login data in analytics
+    - CU-381: Clearer login error messages and standardized error reasons
     """
-
     correlation_id = str(uuid4())
 
     user_credentials = {
-        "username": "test_user@example.com",
+        "username": "test_user",
         "password": "secure_password",
     }
 
@@ -73,7 +92,6 @@ def main():
         track_login_event(
             event_name="login_attempt",
             correlation_id=correlation_id,
-            username=cleaned["username"],
         )
 
         user = login_user(cleaned)
@@ -81,30 +99,23 @@ def main():
         track_login_event(
             event_name="login_success",
             correlation_id=correlation_id,
-            username=cleaned["username"],
             user_id=user["id"],
         )
 
         print("User logged in successfully.")
 
-    except ValueError as error:
+    except Exception as error:
+        error_code = map_login_error_to_code(error)
+
+        # CU-381: Track standardized reason instead of raw message
         track_login_event(
             event_name="login_failed",
             correlation_id=correlation_id,
-            username=user_credentials.get("username"),
-            reason=str(error),
+            error_code=error_code,
         )
-        print(f"Login failed: {error}")
 
-    except Exception as error:
-        track_login_event(
-            event_name="login_error",
-            correlation_id=correlation_id,
-            username=user_credentials.get("username"),
-            error_type=type(error).__name__,
-        )
-        print("Unexpected error occurred.")
-        raise
+        # CU-381: Show a friendly message to the user
+        print(user_friendly_message(error_code))
 
 
 if __name__ == "__main__":
